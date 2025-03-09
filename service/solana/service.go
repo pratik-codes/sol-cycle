@@ -3,7 +3,12 @@ package solana
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
+	"log"
+	"net/http"
+	"swap/internal/utils"
 
 	"github.com/gagliardetto/solana-go"
 	"github.com/gagliardetto/solana-go/rpc"
@@ -11,53 +16,64 @@ import (
 
 // Service handles Solana-related operations
 type Service struct {
-	client   *rpc.Client
-	priceAPI string
+	client *rpc.Client
 }
 
 // NewService creates a new Solana service instance
-func NewService(client *rpc.Client, priceAPI string) *Service {
+func NewService(client *rpc.Client) *Service {
 	return &Service{
-		client:   client,
-		priceAPI: priceAPI,
+		client: client,
 	}
 }
 
-// GetSOLPrice fetches the current SOL price from Solana blockchain using Pyth oracle
+// GetSOLPrice retrieves the current SOL price from Jupiter API
 func (s *Service) GetSOLPrice(ctx context.Context) (float64, error) {
-	// Pyth SOL/USD price account on mainnet
-	pythSolUsdAccount := solana.MustPublicKeyFromBase58("H6ARHf6YXhGYeQfUzQNGk6rDNnLBQKrenN712K4AQJEG")
+	log.Println("fetching SOL price")
+	apiURL := "https://api.jup.ag/price/v2?ids=So11111111111111111111111111111111111111112&showExtraInfo=false"
 
-	// Get the account info
-	accountInfo, err := s.client.GetAccountInfo(ctx, pythSolUsdAccount)
+	req, err := http.NewRequestWithContext(ctx, "GET", apiURL, nil)
 	if err != nil {
-		return 0, fmt.Errorf("failed to get Pyth SOL/USD price data: %v", err)
+		return 0, fmt.Errorf("failed to create request: %v", err)
 	}
 
-	// Parse the Pyth price data (simplified)
-	// The price is typically stored at a specific offset in the account data
-	// This is a simplified implementation - actual Pyth data parsing is more complex
-	if len(accountInfo.Value.Data.GetBinary()) < 100 {
-		return 0, fmt.Errorf("invalid Pyth price data format")
+	req.Header.Add("accept", "application/json")
+
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return 0, fmt.Errorf("failed to perform request: %v", err)
+	}
+	defer res.Body.Close()
+
+	if res.StatusCode != http.StatusOK {
+		return 0, fmt.Errorf("received non-200 response: %s", res.Status)
 	}
 
-	// Extract the price - this is a simplified example
-	// Real implementation would use the proper Pyth SDK to parse the price feed
-	priceData := accountInfo.Value.Data.GetBinary()
+	body, err := io.ReadAll(res.Body)
+	if err != nil {
+		return 0, fmt.Errorf("failed to read response body: %v", err)
+	}
 
-	// Note: This is a placeholder for the actual Pyth data parsing
-	// In a real implementation, you would use the Pyth SDK to parse this data correctly
-	// The below is just illustrative and won't work as-is
+	var response struct {
+		Data map[string]struct {
+			ID    string `json:"id"`
+			Type  string `json:"type"`
+			Price string `json:"price"`
+		} `json:"data"`
+		TimeTaken float64 `json:"timeTaken"`
+	}
 
-	// Assume price is stored as a float64 at offset 55
-	// In reality, you'd need proper Pyth parsing logic here
-	price := float64(uint64(priceData[55])|
-		uint64(priceData[56])<<8|
-		uint64(priceData[57])<<16|
-		uint64(priceData[58])<<24) / 100.0
+	if err := json.Unmarshal(body, &response); err != nil {
+		return 0, fmt.Errorf("failed to parse price data: %v", err)
+	}
 
-	if price <= 0 {
-		return 0, fmt.Errorf("invalid price value")
+	solData, exists := response.Data["So11111111111111111111111111111111111111112"]
+	if !exists {
+		return 0, fmt.Errorf("SOL price not found in response")
+	}
+
+	price, err := utils.ParseFloat(solData.Price)
+	if err != nil {
+		return 0, fmt.Errorf("failed to parse SOL price: %v", err)
 	}
 
 	return price, nil

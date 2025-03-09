@@ -41,8 +41,11 @@ const (
 	USDCMint = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
 )
 
+var tokenPair TokenPair
+
 // Service manages the swap operations
 type Service struct {
+	ctx           context.Context
 	config        *datatypes.Config
 	client        *rpc.Client
 	solanaService *solService.Service
@@ -70,12 +73,14 @@ func NewService(
 	log.Printf("Using wallet: %s", publicKey.String())
 
 	// Initialize token pair
-	tokenPair, err := initializeTokenAccounts(client, publicKey, cfg.USDCMint)
+	tokenPair, err := initializeTokenAccounts(client, publicKey, USDCMint)
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize token accounts: %v", err)
 	}
 
-	return &Service{
+	// Create service instance
+	service := &Service{
+		ctx:           context.Background(),
 		config:        cfg,
 		client:        client,
 		solanaService: solanaService,
@@ -83,7 +88,15 @@ func NewService(
 		privateKey:    privateKey,
 		publicKey:     publicKey,
 		tokenPair:     tokenPair,
-	}, nil
+	}
+
+	// If dynamic stop loss is enabled, log the configuration
+	if cfg.DynamicStopLoss {
+		log.Printf("Dynamic stop loss enabled: Will adjust to $%.2f below highest price",
+			cfg.StopLossAdjustment)
+	}
+
+	return service, nil
 }
 
 // Start begins the swap monitoring and execution loop
@@ -96,7 +109,16 @@ func (s *Service) Start(ctx context.Context) error {
 	log.Printf("Starting position: %s", currentPosition)
 
 	// Main monitoring loop
-	log.Printf("Starting price monitoring. Stop loss set at $%.2f", s.config.StopLossPrice)
+	if s.config.DynamicStopLoss {
+		log.Printf("Starting price monitoring with dynamic stop loss:")
+		log.Printf("  - Initial stop loss: $%.2f", s.config.StopLossPrice)
+		log.Printf("  - Dynamic stop loss will be activated when price exceeds $%.2f",
+			s.config.StopLossPrice+s.config.StopLossAdjustment)
+		log.Printf("  - Stop loss will be adjusted to $%.2f below highest price seen", s.config.StopLossAdjustment)
+	} else {
+		log.Printf("Starting price monitoring. Fixed stop loss set at $%.2f", s.config.StopLossPrice)
+	}
+
 	ticker := time.NewTicker(time.Duration(s.config.CheckInterval) * time.Second)
 	defer ticker.Stop()
 
@@ -116,17 +138,21 @@ func (s *Service) Start(ctx context.Context) error {
 // monitorAndSwap checks current prices and executes swaps if needed
 func (s *Service) monitorAndSwap(currentPosition *PositionState) error {
 	// Get current SOL price using the Solana service
-	price, err := s.solanaService.GetSOLPrice()
+	price, err := s.solanaService.GetSOLPrice(s.ctx)
 	if err != nil {
 		log.Printf("Error getting SOL price: %v. Skipping this cycle.", err)
 		return err
 	}
 
+	// Calculate the effective stop loss price
+	effectiveStopLoss := s.calculateDynamicStopLoss(price)
+
 	log.Printf("Current SOL price: $%.2f, Stop loss: $%.2f, Position: %s",
-		price, s.config.StopLossPrice, *currentPosition)
+		price, effectiveStopLoss, *currentPosition)
 
 	// Check if we need to swap based on price and current position
-	if *currentPosition == InSOL && price < s.config.StopLossPrice {
+	if *currentPosition == InSOL && price < effectiveStopLoss {
+		// If we're in SOL and price drops below stop loss, swap to USDC
 		log.Printf("Stop loss triggered at $%.2f! Swapping SOL to USDC...", price)
 		err = s.swapSOLToUSDC()
 		if err != nil {
@@ -135,8 +161,10 @@ func (s *Service) monitorAndSwap(currentPosition *PositionState) error {
 		}
 		*currentPosition = InUSDC
 		log.Printf("Successfully swapped to USDC")
-	} else if *currentPosition == InUSDC && price > s.config.StopLossPrice {
-		log.Printf("Buy back triggered at $%.2f! Swapping USDC to SOL...", price)
+	} else if *currentPosition == InUSDC && price > effectiveStopLoss {
+		// Buy back into SOL if price is above the stop loss
+		log.Printf("Buy back triggered at $%.2f (above stop loss $%.2f)! Swapping USDC to SOL...",
+			price, effectiveStopLoss)
 		err = s.swapUSDCToSOL()
 		if err != nil {
 			log.Printf("Failed to swap USDC to SOL: %v", err)
@@ -149,10 +177,45 @@ func (s *Service) monitorAndSwap(currentPosition *PositionState) error {
 	return nil
 }
 
+// calculateDynamicStopLoss determines the stop loss price based on current market conditions
+func (s *Service) calculateDynamicStopLoss(currentPrice float64) float64 {
+	// If dynamic stop loss is not enabled, use the fixed stop loss price
+	if !s.config.DynamicStopLoss {
+		return s.config.StopLossPrice
+	}
+
+	// Only consider updating the highest price if it's significantly higher than the initial stop loss
+	// This ensures we don't lower the stop loss below the initial value
+	if currentPrice > (s.config.StopLossPrice + s.config.StopLossAdjustment) {
+		// Update the highest price seen if current price is significantly higher than previous highest
+		if s.config.HighestPrice == 0 || currentPrice > (s.config.HighestPrice+s.config.StopLossAdjustment) {
+			s.config.HighestPrice = currentPrice
+			log.Printf("New highest price recorded: $%.2f", currentPrice)
+
+			// Calculate new stop loss based on highest price
+			dynamicStopLoss := s.config.HighestPrice - s.config.StopLossAdjustment
+			log.Printf("Dynamic stop loss adjusted to $%.2f (highest price $%.2f - adjustment $%.2f)",
+				dynamicStopLoss, s.config.HighestPrice, s.config.StopLossAdjustment)
+
+			return dynamicStopLoss
+		}
+
+		// If we have a recorded highest price that's significantly above the initial stop loss
+		if s.config.HighestPrice > (s.config.StopLossPrice + s.config.StopLossAdjustment) {
+			calculatedStopLoss := s.config.HighestPrice - s.config.StopLossAdjustment
+			// Ensure the calculated stop loss is not lower than the initial stop loss
+			if calculatedStopLoss > s.config.StopLossPrice {
+				return calculatedStopLoss
+			}
+		}
+	}
+
+	// Default to the initial stop loss price
+	return s.config.StopLossPrice
+}
+
 // Initialize token accounts and return the token pair
 func initializeTokenAccounts(client *rpc.Client, publicKey solana.PublicKey, usdcMint string) (TokenPair, error) {
-	var tokenPair TokenPair
-
 	// SOL is native, so the address is the same as the wallet
 	tokenPair.SOLAddress = publicKey
 
@@ -164,9 +227,11 @@ func initializeTokenAccounts(client *rpc.Client, publicKey solana.PublicKey, usd
 
 	// Find the USDC token account
 	usdcAccount, _, err := solana.FindAssociatedTokenAddress(publicKey, usdcMintPubkey)
+	log.Println("USDC mint:", usdcMintPubkey, err)
 	if err != nil {
 		return tokenPair, fmt.Errorf("failed to derive USDC token account: %v", err)
 	}
+	log.Println("USDC token account:", usdcAccount.String())
 
 	// Check if the token account exists
 	_, err = client.GetAccountInfo(context.Background(), usdcAccount)
@@ -197,7 +262,6 @@ func (s *Service) determineCurrentPosition() (PositionState, error) {
 		s.tokenPair.USDCAddress,
 		rpc.CommitmentFinalized,
 	)
-
 	// If USDC account doesn't exist yet, we're in SOL
 	if err != nil {
 		return InSOL, nil
@@ -262,6 +326,8 @@ func (s *Service) swapUSDCToSOL() error {
 
 // Execute the actual SOL to USDC swap
 func (s *Service) executeSOLToUSDCSwap() error {
+	log.Println("executing sol to usdc swap")
+
 	ctx := context.Background()
 
 	// Get current SOL balance using the Solana service
@@ -269,6 +335,8 @@ func (s *Service) executeSOLToUSDCSwap() error {
 	if err != nil {
 		return fmt.Errorf("failed to get SOL balance: %v", err)
 	}
+
+	log.Println("sol balance before swap", solBalance)
 
 	// Calculate swap amount
 	swapAmount := solBalance - s.config.MinimumSOL
@@ -284,12 +352,10 @@ func (s *Service) executeSOLToUSDCSwap() error {
 	// Use Jupiter swap service with 0.5% slippage (50 basis points)
 	err = s.jupiterSvc.Swap(
 		ctx,
-		s.privateKey,
-		s.publicKey,
 		SolMint,
 		USDCMint,
 		lamports,
-		50,
+		5,
 	)
 	if err != nil {
 		return fmt.Errorf("failed to perform SOL to USDC swap: %v", err)
@@ -334,12 +400,10 @@ func (s *Service) executeUSDCToSOLSwap() error {
 	// Use Jupiter swap service with 0.5% slippage (50 basis points)
 	err = s.jupiterSvc.Swap(
 		ctx,
-		s.privateKey,
-		s.publicKey,
 		USDCMint,
 		SolMint,
 		usdcLamports,
-		50,
+		5,
 	)
 	if err != nil {
 		return fmt.Errorf("failed to perform USDC to SOL swap: %v", err)
