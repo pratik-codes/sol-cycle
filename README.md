@@ -1,5 +1,25 @@
 # SolCycle
 
+## Table of Contents
+1. [Overview](#overview)
+2. [Key Features](#key-features)
+   - [Dynamic Stop Loss Adjustment](#dynamic-stop-loss-adjustment)
+   - [How SolCycle Saves You Money](#how-solcycle-saves-you-money)
+3. [Technology Stack](#technology-stack)
+4. [Setup and Installation](#setup-and-installation)
+   - [Prerequisites](#prerequisites)
+   - [Installation](#installation)
+   - [Configuration](#configuration)
+5. [Usage](#usage)
+6. [Configuration Options](#configuration-options)
+7. [How It Works](#how-it-works)
+8. [Current Challenges](#current-challenges)
+   - [Transaction Cost Optimization](#transaction-cost-optimization)
+9. [Contributing](#contributing)
+10. [License](#license)
+11. [Disclaimer](#disclaimer)
+
+
 ## Overview
 SolCycle is an automated trading system for Solana (SOL) that helps users optimize their trading strategy through intelligent market cycle management. The system automatically converts between SOL and stablecoins based on market conditions, implementing dynamic stop-loss mechanisms to preserve capital during downturns and capitalize on upswings.
 
