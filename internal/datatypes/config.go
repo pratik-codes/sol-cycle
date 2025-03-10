@@ -14,6 +14,7 @@ type Config struct {
 	RetryAttempts int
 	RetryDelay    int
 	CheckInterval int
+	EnableRetry   bool // Whether to retry failed swaps or immediately check position again
 
 	// Dynamic stop loss configuration
 	DynamicStopLoss    bool    // Whether to use dynamic stop loss

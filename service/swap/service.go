@@ -157,8 +157,7 @@ func (s *Service) monitorAndSwap(currentPosition *PositionState) error {
 		logger.Info("Stop loss triggered at $%.2f! Swapping SOL to USDC...", price)
 		err = s.swapSOLToUSDC()
 		if err != nil {
-			logger.Error("Failed to swap SOL to USDC: %v", err)
-			return err
+			return s.handleSwapFailure(err, currentPosition)
 		}
 		*currentPosition = InUSDC
 		logger.Info("Successfully swapped to USDC")
@@ -168,8 +167,7 @@ func (s *Service) monitorAndSwap(currentPosition *PositionState) error {
 			price, effectiveStopLoss)
 		err = s.swapUSDCToSOL()
 		if err != nil {
-			logger.Error("Failed to swap USDC to SOL: %v", err)
-			return err
+			return s.handleSwapFailure(err, currentPosition)
 		}
 		*currentPosition = InSOL
 		logger.Info("Successfully swapped to SOL")
@@ -287,12 +285,24 @@ func (s *Service) determineCurrentPosition() (PositionState, error) {
 	return InSOL, nil
 }
 
-// Swap SOL to USDC
-func (s *Service) swapSOLToUSDC() error {
+// attemptSwap is a utility function to handle swap attempts with retry logic
+func (s *Service) attemptSwap(swapFunc func() error) error {
+	// If retries are disabled, only try once
+	if !s.config.EnableRetry {
+		logger.Info("Retry is disabled. Attempting swap once.")
+		err := swapFunc()
+		if err != nil {
+			logger.Error("Swap failed: %v", err)
+			return err
+		}
+		return nil
+	}
+
+	// If retries are enabled, try multiple times
 	for attempt := 1; attempt <= s.config.RetryAttempts; attempt++ {
 		logger.Info("Swap attempt %d/%d", attempt, s.config.RetryAttempts)
 
-		err := s.executeSOLToUSDCSwap()
+		err := swapFunc()
 		if err == nil {
 			return nil // Success
 		}
@@ -307,24 +317,14 @@ func (s *Service) swapSOLToUSDC() error {
 	return fmt.Errorf("failed to swap after %d attempts", s.config.RetryAttempts)
 }
 
+// Swap SOL to USDC
+func (s *Service) swapSOLToUSDC() error {
+	return s.attemptSwap(s.executeSOLToUSDCSwap)
+}
+
 // Swap USDC to SOL
 func (s *Service) swapUSDCToSOL() error {
-	for attempt := 1; attempt <= s.config.RetryAttempts; attempt++ {
-		logger.Info("Swap attempt %d/%d", attempt, s.config.RetryAttempts)
-
-		err := s.executeUSDCToSOLSwap()
-		if err == nil {
-			return nil // Success
-		}
-
-		logger.Error("Swap failed: %v", err)
-		if attempt < s.config.RetryAttempts {
-			logger.Info("Retrying in %d seconds...", s.config.RetryDelay)
-			time.Sleep(time.Duration(s.config.RetryDelay) * time.Second)
-		}
-	}
-
-	return fmt.Errorf("failed to swap after %d attempts", s.config.RetryAttempts)
+	return s.attemptSwap(s.executeUSDCToSOLSwap)
 }
 
 // Execute the actual SOL to USDC swap
@@ -412,5 +412,36 @@ func (s *Service) executeUSDCToSOLSwap() error {
 		return fmt.Errorf("failed to perform USDC to SOL swap: %v", err)
 	}
 
+	return nil
+}
+
+// handleSwapFailure is a utility function to handle swap failures
+// It determines the current position, gets the latest price, and updates the position state
+func (s *Service) handleSwapFailure(err error, currentPosition *PositionState) error {
+	logger.Error("Swap failed: %v", err)
+
+	// If swap failed, determine the current position again
+	actualPosition, posErr := s.determineCurrentPosition()
+	if posErr != nil {
+		logger.Error("Failed to determine current position after swap failure: %v", posErr)
+		return err // Return the original swap error
+	}
+
+	// Update the current position based on what we actually have
+	*currentPosition = actualPosition
+	logger.Info("After swap failure, determined current position is: %s", *currentPosition)
+
+	// Get the latest price to make a new decision
+	newPrice, priceErr := s.solanaService.GetSOLPrice(s.ctx)
+	if priceErr != nil {
+		logger.Error("Failed to get updated price after swap failure: %v", priceErr)
+		return err // Return the original swap error
+	}
+
+	// Recalculate stop loss with the new price
+	newStopLoss := s.calculateDynamicStopLoss(newPrice)
+	logger.Info("Updated SOL price: $%.2f, Updated stop loss: $%.2f", newPrice, newStopLoss)
+
+	// No need to take action here - the next cycle will handle it based on the updated position
 	return nil
 }

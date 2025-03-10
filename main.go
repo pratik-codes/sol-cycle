@@ -52,9 +52,12 @@ func main() {
 		RPCEndpoint:   rpcEndpoint,
 		StopLossPrice: 130.0,
 		MinimumSOL:    0.1,
+		CheckInterval: 2,
+
+		// Retry configuration
+		EnableRetry:   true, // Enable retry by default
 		RetryAttempts: 3,
 		RetryDelay:    2,
-		CheckInterval: 2,
 
 		// Dynamic stop loss configuration
 		DynamicStopLoss:    true,

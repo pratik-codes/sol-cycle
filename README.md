@@ -81,6 +81,26 @@ SolCycle offers several configuration options to customize your trading strategy
 3. When market conditions improve, it can automatically buy back SOL at better prices
 4. The dynamic stop loss continuously adjusts to protect your gains while allowing for upside potential
 
+## Current Challenges
+
+While SolCycle's core functionality works effectively, we're actively addressing the following challenges:
+
+### Transaction Cost Optimization
+The primary challenge we're currently facing is optimizing transaction costs:
+
+- **Gas Fees**: Each swap operation incurs gas fees on the Solana network
+- **DEX Fees**: Jupiter routing includes fees for liquidity providers
+- **Long-term Economics**: For extended operation, these fees can accumulate and impact overall profitability
+
+We're actively working on solutions to reduce these costs:
+
+- Implementing batched transactions where possible
+- Optimizing transaction timing to target lower network congestion periods
+- Exploring fee-efficient routing strategies
+- Investigating minimum viable swap amounts to balance transaction costs against potential gains
+
+These optimizations are critical for making SolCycle more economical for long-term operation, especially for users with smaller portfolios or during periods of high network activity.
+
 ## Contributing
 1. Fork the repository
 2. Create a new branch (`git checkout -b feature-branch`)
