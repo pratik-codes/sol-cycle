@@ -101,7 +101,7 @@ func (s *Service) Swap(
 		swapResponse, err := jupClient.PostSwapWithResponse(ctx, jupiter.PostSwapJSONRequestBody{
 			PrioritizationFeeLamports: &prioritizationFeeLamports,
 			QuoteResponse:             *quote,
-			UserPublicKey:             "84vT6D9TLowT9BjbKmm8X2GGkBaQy9xG6N6MpJ3LEsfe",
+			UserPublicKey:             s.config.PublicKey.String(),
 			DynamicComputeUnitLimit:   &dynamicComputeUnitLimit,
 		})
 		if err != nil {
