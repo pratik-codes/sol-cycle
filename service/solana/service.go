@@ -6,9 +6,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
 	"swap/internal/utils"
+	"swap/pkg/logger"
 
 	"github.com/gagliardetto/solana-go"
 	"github.com/gagliardetto/solana-go/rpc"
@@ -28,7 +28,7 @@ func NewService(client *rpc.Client) *Service {
 
 // GetSOLPrice retrieves the current SOL price from Jupiter API
 func (s *Service) GetSOLPrice(ctx context.Context) (float64, error) {
-	log.Println("fetching SOL price")
+	logger.Debug("Fetching SOL price")
 	apiURL := "https://api.jup.ag/price/v2?ids=So11111111111111111111111111111111111111112&showExtraInfo=false"
 
 	req, err := http.NewRequestWithContext(ctx, "GET", apiURL, nil)

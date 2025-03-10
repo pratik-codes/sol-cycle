@@ -4,12 +4,13 @@ package swap
 import (
 	"context"
 	"fmt"
-	"log"
 	"strconv"
+	"time"
+
 	"swap/internal/datatypes"
+	"swap/pkg/logger"
 	"swap/service/jupiter"
 	solService "swap/service/solana"
-	"time"
 
 	"github.com/gagliardetto/solana-go"
 	"github.com/gagliardetto/solana-go/rpc"
@@ -70,7 +71,7 @@ func NewService(
 
 	// Derive public key
 	publicKey := privateKey.PublicKey()
-	log.Printf("Using wallet: %s", publicKey.String())
+	logger.Info("Using wallet: %s", publicKey.String())
 
 	// Initialize token pair
 	tokenPair, err := initializeTokenAccounts(client, publicKey, USDCMint)
@@ -92,7 +93,7 @@ func NewService(
 
 	// If dynamic stop loss is enabled, log the configuration
 	if cfg.DynamicStopLoss {
-		log.Printf("Dynamic stop loss enabled: Will adjust to $%.2f below highest price",
+		logger.Info("Dynamic stop loss enabled: Will adjust to $%.2f below highest price",
 			cfg.StopLossAdjustment)
 	}
 
@@ -106,17 +107,17 @@ func (s *Service) Start(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("failed to determine current position: %v", err)
 	}
-	log.Printf("Starting position: %s", currentPosition)
+	logger.Info("Starting position: %s", currentPosition)
 
 	// Main monitoring loop
 	if s.config.DynamicStopLoss {
-		log.Printf("Starting price monitoring with dynamic stop loss:")
-		log.Printf("  - Initial stop loss: $%.2f", s.config.StopLossPrice)
-		log.Printf("  - Dynamic stop loss will be activated when price exceeds $%.2f",
+		logger.Info("Starting price monitoring with dynamic stop loss:")
+		logger.Info("  - Initial stop loss: $%.2f", s.config.StopLossPrice)
+		logger.Info("  - Dynamic stop loss will be activated when price exceeds $%.2f",
 			s.config.StopLossPrice+s.config.StopLossAdjustment)
-		log.Printf("  - Stop loss will be adjusted to $%.2f below highest price seen", s.config.StopLossAdjustment)
+		logger.Info("  - Stop loss will be adjusted to $%.2f below highest price seen", s.config.StopLossAdjustment)
 	} else {
-		log.Printf("Starting price monitoring. Fixed stop loss set at $%.2f", s.config.StopLossPrice)
+		logger.Info("Starting price monitoring. Fixed stop loss set at $%.2f", s.config.StopLossPrice)
 	}
 
 	ticker := time.NewTicker(time.Duration(s.config.CheckInterval) * time.Second)
@@ -129,7 +130,7 @@ func (s *Service) Start(ctx context.Context) error {
 		case <-ticker.C:
 			err := s.monitorAndSwap(&currentPosition)
 			if err != nil {
-				log.Printf("Error in monitoring cycle: %v", err)
+				logger.Error("Error in monitoring cycle: %v", err)
 			}
 		}
 	}
@@ -140,38 +141,38 @@ func (s *Service) monitorAndSwap(currentPosition *PositionState) error {
 	// Get current SOL price using the Solana service
 	price, err := s.solanaService.GetSOLPrice(s.ctx)
 	if err != nil {
-		log.Printf("Error getting SOL price: %v. Skipping this cycle.", err)
+		logger.Error("Error getting SOL price: %v. Skipping this cycle.", err)
 		return err
 	}
 
 	// Calculate the effective stop loss price
 	effectiveStopLoss := s.calculateDynamicStopLoss(price)
 
-	log.Printf("Current SOL price: $%.2f, Stop loss: $%.2f, Position: %s",
+	logger.Info("Current SOL price: $%.2f, Stop loss: $%.2f, Position: %s",
 		price, effectiveStopLoss, *currentPosition)
 
 	// Check if we need to swap based on price and current position
 	if *currentPosition == InSOL && price < effectiveStopLoss {
 		// If we're in SOL and price drops below stop loss, swap to USDC
-		log.Printf("Stop loss triggered at $%.2f! Swapping SOL to USDC...", price)
+		logger.Info("Stop loss triggered at $%.2f! Swapping SOL to USDC...", price)
 		err = s.swapSOLToUSDC()
 		if err != nil {
-			log.Printf("Failed to swap SOL to USDC: %v", err)
+			logger.Error("Failed to swap SOL to USDC: %v", err)
 			return err
 		}
 		*currentPosition = InUSDC
-		log.Printf("Successfully swapped to USDC")
+		logger.Info("Successfully swapped to USDC")
 	} else if *currentPosition == InUSDC && price > effectiveStopLoss {
 		// Buy back into SOL if price is above the stop loss
-		log.Printf("Buy back triggered at $%.2f (above stop loss $%.2f)! Swapping USDC to SOL...",
+		logger.Info("Buy back triggered at $%.2f (above stop loss $%.2f)! Swapping USDC to SOL...",
 			price, effectiveStopLoss)
 		err = s.swapUSDCToSOL()
 		if err != nil {
-			log.Printf("Failed to swap USDC to SOL: %v", err)
+			logger.Error("Failed to swap USDC to SOL: %v", err)
 			return err
 		}
 		*currentPosition = InSOL
-		log.Printf("Successfully swapped to SOL")
+		logger.Info("Successfully swapped to SOL")
 	}
 
 	return nil
@@ -190,11 +191,11 @@ func (s *Service) calculateDynamicStopLoss(currentPrice float64) float64 {
 		// Update the highest price seen if current price is significantly higher than previous highest
 		if s.config.HighestPrice == 0 || currentPrice > (s.config.HighestPrice+s.config.StopLossAdjustment) {
 			s.config.HighestPrice = currentPrice
-			log.Printf("New highest price recorded: $%.2f", currentPrice)
+			logger.Info("New highest price recorded: $%.2f", currentPrice)
 
 			// Calculate new stop loss based on highest price
 			dynamicStopLoss := s.config.HighestPrice - s.config.StopLossAdjustment
-			log.Printf("Dynamic stop loss adjusted to $%.2f (highest price $%.2f - adjustment $%.2f)",
+			logger.Info("Dynamic stop loss adjusted to $%.2f (highest price $%.2f - adjustment $%.2f)",
 				dynamicStopLoss, s.config.HighestPrice, s.config.StopLossAdjustment)
 
 			return dynamicStopLoss
@@ -216,6 +217,8 @@ func (s *Service) calculateDynamicStopLoss(currentPrice float64) float64 {
 
 // Initialize token accounts and return the token pair
 func initializeTokenAccounts(client *rpc.Client, publicKey solana.PublicKey, usdcMint string) (TokenPair, error) {
+	tokenPair := TokenPair{}
+
 	// SOL is native, so the address is the same as the wallet
 	tokenPair.SOLAddress = publicKey
 
@@ -227,21 +230,21 @@ func initializeTokenAccounts(client *rpc.Client, publicKey solana.PublicKey, usd
 
 	// Find the USDC token account
 	usdcAccount, _, err := solana.FindAssociatedTokenAddress(publicKey, usdcMintPubkey)
-	log.Println("USDC mint:", usdcMintPubkey, err)
+	logger.Info("USDC mint: %s", usdcMintPubkey)
 	if err != nil {
 		return tokenPair, fmt.Errorf("failed to derive USDC token account: %v", err)
 	}
-	log.Println("USDC token account:", usdcAccount.String())
+	logger.Info("USDC token account: %s", usdcAccount.String())
 
 	// Check if the token account exists
 	_, err = client.GetAccountInfo(context.Background(), usdcAccount)
 	if err != nil {
 		// Account doesn't exist, we would need to create it
-		log.Printf("USDC token account does not exist. It will be created during the first swap.")
+		logger.Warn("USDC token account does not exist. It will be created during the first swap.")
 	}
 
 	tokenPair.USDCAddress = usdcAccount
-	log.Printf("USDC token account: %s", usdcAccount.String())
+	logger.Info("USDC token account: %s", usdcAccount.String())
 
 	return tokenPair, nil
 }
@@ -274,7 +277,7 @@ func (s *Service) determineCurrentPosition() (PositionState, error) {
 		usdcBalanceFloat = usdcBalanceFloat / 1e6 // USDC has 6 decimals
 	}
 
-	log.Printf("Current balances: %.4f SOL, %.2f USDC", solBalance, usdcBalanceFloat)
+	logger.Info("Current balances: %.4f SOL, %.2f USDC", solBalance, usdcBalanceFloat)
 
 	// Determine position based on which token has more value
 	if usdcBalanceFloat > 1.0 {
@@ -287,16 +290,16 @@ func (s *Service) determineCurrentPosition() (PositionState, error) {
 // Swap SOL to USDC
 func (s *Service) swapSOLToUSDC() error {
 	for attempt := 1; attempt <= s.config.RetryAttempts; attempt++ {
-		log.Printf("Swap attempt %d/%d", attempt, s.config.RetryAttempts)
+		logger.Info("Swap attempt %d/%d", attempt, s.config.RetryAttempts)
 
 		err := s.executeSOLToUSDCSwap()
 		if err == nil {
 			return nil // Success
 		}
 
-		log.Printf("Swap failed: %v", err)
+		logger.Error("Swap failed: %v", err)
 		if attempt < s.config.RetryAttempts {
-			log.Printf("Retrying in %d seconds...", s.config.RetryDelay)
+			logger.Info("Retrying in %d seconds...", s.config.RetryDelay)
 			time.Sleep(time.Duration(s.config.RetryDelay) * time.Second)
 		}
 	}
@@ -307,16 +310,16 @@ func (s *Service) swapSOLToUSDC() error {
 // Swap USDC to SOL
 func (s *Service) swapUSDCToSOL() error {
 	for attempt := 1; attempt <= s.config.RetryAttempts; attempt++ {
-		log.Printf("Swap attempt %d/%d", attempt, s.config.RetryAttempts)
+		logger.Info("Swap attempt %d/%d", attempt, s.config.RetryAttempts)
 
 		err := s.executeUSDCToSOLSwap()
 		if err == nil {
 			return nil // Success
 		}
 
-		log.Printf("Swap failed: %v", err)
+		logger.Error("Swap failed: %v", err)
 		if attempt < s.config.RetryAttempts {
-			log.Printf("Retrying in %d seconds...", s.config.RetryDelay)
+			logger.Info("Retrying in %d seconds...", s.config.RetryDelay)
 			time.Sleep(time.Duration(s.config.RetryDelay) * time.Second)
 		}
 	}
@@ -326,7 +329,7 @@ func (s *Service) swapUSDCToSOL() error {
 
 // Execute the actual SOL to USDC swap
 func (s *Service) executeSOLToUSDCSwap() error {
-	log.Println("executing sol to usdc swap")
+	logger.Info("executing sol to usdc swap")
 
 	ctx := context.Background()
 
@@ -336,7 +339,7 @@ func (s *Service) executeSOLToUSDCSwap() error {
 		return fmt.Errorf("failed to get SOL balance: %v", err)
 	}
 
-	log.Println("sol balance before swap", solBalance)
+	logger.Info("sol balance before swap", solBalance)
 
 	// Calculate swap amount
 	swapAmount := solBalance - s.config.MinimumSOL
@@ -346,7 +349,7 @@ func (s *Service) executeSOLToUSDCSwap() error {
 
 	// Convert the swap amount back to lamports (SOL's smallest unit)
 	lamports := uint64(swapAmount * 1e9)
-	log.Printf("Swapping %.4f SOL to USDC (keeping %.4f SOL as minimum)",
+	logger.Info("Swapping %.4f SOL to USDC (keeping %.4f SOL as minimum)",
 		swapAmount, s.config.MinimumSOL)
 
 	// Use Jupiter swap service with 0.5% slippage (50 basis points)
@@ -389,7 +392,7 @@ func (s *Service) executeUSDCToSOLSwap() error {
 		return fmt.Errorf("not enough USDC to swap")
 	}
 
-	log.Printf("Swapping %.2f USDC to SOL", usdcBalance)
+	logger.Info("Swapping %.2f USDC to SOL", usdcBalance)
 
 	// Convert the USDC amount to its smallest unit (6 decimals)
 	usdcLamports, err := strconv.ParseUint(usdcAmountStr, 10, 64)
